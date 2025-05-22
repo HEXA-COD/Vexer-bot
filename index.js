@@ -1,111 +1,83 @@
-const fca = require("fca-unofficial");
-const fs = require("fs");
+// Advanced Facebook Chatbot Entry Point
+
+const login = require("fca-unofficial");
+const fs = require("fs-extra");
 const path = require("path");
+const chalk = require("chalk");
+const figlet = require("figlet");
+const ora = require("ora");
 const moment = require("moment-timezone");
+const Table = require("cli-table3");
+const dotenv = require("dotenv");
+const winston = require("winston");
 
-// Load config
-const configPath = path.join(__dirname, "config.json");
-if (!fs.existsSync(configPath)) {
-  console.error("Error: config.json missing!");
-  process.exit(1);
-}
-const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+dotenv.config();
 
-// Load appstate
-const appStatePath = path.join(__dirname, "appstate.json");
-if (!fs.existsSync(appStatePath)) {
-  console.error("Error: appstate.json missing!");
-  process.exit(1);
-}
-const appState = JSON.parse(fs.readFileSync(appStatePath, "utf8"));
+const config = require("./config.json");
+const appState = require("./appstate.json");
 
-// Cooldown map
-const cooldowns = new Map();
-
-// Load commands dynamically
+const commandsDir = path.join(__dirname, "commands");
 const commands = new Map();
-const commandsPath = path.join(__dirname, "commands");
-if (fs.existsSync(commandsPath)) {
-  const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith(".js"));
-  for (const file of commandFiles) {
-    const command = require(path.join(commandsPath, file));
-    if (command.name) {
-      commands.set(command.name, command);
-      console.log(`Loaded command: ${command.name}`);
-    }
-  }
-} else {
-  console.warn("Warning: commands folder missing. No commands loaded.");
-}
 
-// Helper: check cooldown
-function isOnCooldown(userId) {
-  if (!cooldowns.has(userId)) return false;
-  if (Date.now() > cooldowns.get(userId)) {
-    cooldowns.delete(userId);
-    return false;
-  }
-  return true;
-}
+// Display banner
+console.log(chalk.cyan(figlet.textSync("FB Chatbot", { horizontalLayout: "full" })));
+console.log(chalk.greenBright(`Starting Bot as: ${config.botName} | Timezone: ${config.timezone}`));
+console.log(chalk.gray(`Version: ${config.version || "1.0.0"} | Prefix: ${config.prefix}\n`));
 
-function setCooldown(userId) {
-  cooldowns.set(userId, Date.now() + (config.cooldownSeconds || 5) * 1000);
-}
+// Logger setup
+const logger = winston.createLogger({
+  transports: [
+    new winston.transports.File({ filename: "bot.log" }),
+    new winston.transports.Console()
+  ]
+});
 
-console.log("Logging in with appstate...");
+// Spinner while logging in
+const spinner = ora("Logging in with appstate...").start();
 
-fca.login({ appState }, (err, api) => {
+login({ appState }, (err, api) => {
   if (err) {
-    console.error("Login failed:", err);
-    return;
+    spinner.fail("Failed to login.");
+    return console.error(chalk.red("Login Error:"), err);
   }
-  console.log(`Logged in as: ${api.getCurrentUserID()}`);
 
-  api.setOptions({ listenEvents: true });
+  spinner.succeed("Logged in successfully!");
+  logger.info("Bot logged in using appstate.json");
 
-  api.listenMqtt(async (err, event) => {
-    if (err) {
-      console.error("Listen error:", err);
-      return;
+  api.setOptions({
+    listenEvents: true,
+    selfListen: config.selfListen || false,
+    logLevel: "silent"
+  });
+
+  // Load Commands
+  fs.readdirSync(commandsDir).forEach(file => {
+    if (file.endsWith(".js")) {
+      const command = require(`./commands/${file}`);
+      if (command.name) {
+        commands.set(command.name, command);
+        console.log(chalk.yellow(`Loaded command: ${command.name}`));
+      }
     }
+  });
 
-    if (event.type === "message" && event.body) {
-      const senderID = event.senderID;
-      const message = event.body.trim();
+  // Display command table
+  const table = new Table({ head: ["Command", "Description"], colWidths: [20, 50] });
+  commands.forEach(cmd => table.push([cmd.name, cmd.description || "No description"]));
+  console.log(table.toString());
 
-      if (senderID === api.getCurrentUserID()) return; // ignore self messages
+  // Listen to messages
+  api.listenMqtt((err, message) => {
+    if (err) return logger.error("Listen error:", err);
 
-      if (!message.startsWith(config.prefix)) return; // ignore non-command messages
+    if (message.body && message.body.startsWith(config.prefix)) {
+      const args = message.body.slice(config.prefix.length).trim().split(/ +/);
+      const cmdName = args.shift().toLowerCase();
 
-      if (isOnCooldown(senderID)) {
-        api.sendMessage(
-          `Please wait before sending another command.`,
-          senderID
-        );
-        return;
-      }
-
-      setCooldown(senderID);
-
-      // Parse command and args
-      const args = message.slice(config.prefix.length).trim().split(/\s+/);
-      const commandName = args.shift().toLowerCase();
-
-      if (!commands.has(commandName)) {
-        api.sendMessage(`Unknown command: ${commandName}`, senderID);
-        return;
-      }
-
-      const command = commands.get(commandName);
-
-      try {
-        await command.execute({ api, event, args, config, moment });
-      } catch (error) {
-        console.error(`Error executing command ${commandName}:`, error);
-        api.sendMessage(
-          `An error occurred while executing the command.`,
-          senderID
-        );
+      const command = commands.get(cmdName);
+      if (command) {
+        logger.info(`Executing command: ${cmdName} by ${message.senderID}`);
+        command.run({ api, message, args, config });
       }
     }
   });
