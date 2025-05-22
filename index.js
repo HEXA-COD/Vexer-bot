@@ -1,4 +1,4 @@
-const { login } = require("fca-unofficial");
+const login  = require("fca-unofficial");
 const config = require("./config.json");
 const fs = require("fs");
 const path = require("path");
