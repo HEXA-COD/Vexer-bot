@@ -1,127 +1,105 @@
 process.on('unhandledRejection', (reason, promise) => {
     console.error('UNHANDLED PROMISE REJECTION:', reason);
 });
-const login  = require("fca-unofficial");
-const config = require("./config.json");
 const fs = require("fs");
 const path = require("path");
-const moment = require("moment-timezone");
-const chalk = require("chalk");
-const figlet = require("figlet");
+const login = require("ws3-fca");
+const config = require("./config.json");
 
-// Load appState (make sure it's JSON)
-const appState = require("./appState.json");
-
-// In-memory cooldown tracker: { senderID_commandName: timestamp }
+const commands = new Map();
 const cooldowns = new Map();
 
-// Logging helper
-const log = (msg) => {
-  if (config.enableLogging) {
-    const logMsg = `[${new Date().toISOString()}] ${msg}\n`;
-    fs.appendFileSync(config.logFile, logMsg, "utf8");
+// Load AppState
+let appState;
+try {
+  appState = JSON.parse(fs.readFileSync(config.APPSTATE_PATH, "utf-8"));
+} catch (err) {
+  console.error("❌ Failed to read AppState:", err.message);
+  process.exit(1);
+}
+
+// Login to Facebook
+login({ appState }, async (err, api) => {
+  if (err) {
+    console.error("❌ Login error:", err);
+    return;
   }
-};
 
-const startBot = () => {
-  console.log(chalk.cyan(figlet.textSync(config.botName, { horizontalLayout: "full" })));
-  console.log(`Starting bot with prefix '${config.prefix}' and ownerID '${config.ownerID}'`);
-  
-  login({ appState }, (err, api) => {
-    if (err) {
-      console.error("❌ Login failed:", err);
-      log(`Login failed: ${err}`);
-      return;
-    }
+  api.setOptions({
+    listenEvents: config.listenEvents,
+    selfListen: config.selfListen,
+    forceLogin: config.forceLogin,
+    autoMarkDelivery: config.autoMarkDelivery,
+    autoReconnect: config.autoReconnect,
+    logLevel: config.logLevel || "silent"
+  });
 
-    console.clear();
-    console.log(`🤖 Bot '${config.botName}' is now online!`);
-    log(`Bot started successfully`);
-
-    // Send welcome message to owner on startup
-    api.sendMessage(config.welcomeMessage, config.ownerID);
-
-    api.setOptions({ listenEvents: true, selfListen: false });
-
-    api.listen((err, message) => {
-      if (err) {
-        console.error("Listener error:", err);
-        log(`Listener error: ${err}`);
-        return;
-      }
-      handleMessage(message, api);
+  // Log bot info
+  const userInfo = await new Promise(resolve => {
+    api.getUserInfo(api.getCurrentUserID(), (err, data) => {
+      resolve(data ? data[api.getCurrentUserID()] : {});
     });
   });
-};
 
-const handleMessage = (message, api) => {
-  const { senderID, body, threadID, messageID } = message;
+  console.log(`${config.onlineMessage || "🤖 Bot is online!"}`);
+  console.log(`Logged in as: ${userInfo.name || "Unknown"} (${api.getCurrentUserID()})`);
+  console.log(`Using prefix: "${config.prefix}"`);
 
-  // Block messages from blocked users
-  if (config.blockedUsers.includes(senderID)) return;
+  // Load Commands
+  fs.readdirSync(config.commandPath).filter(file => file.endsWith(".js")).forEach(file => {
+    const command = require(path.join(__dirname, config.commandPath, file));
+    if (command.name) commands.set(command.name, command);
+  });
 
-  // Allow only from allowed groups if configured
-  if (config.allowedGroups.length > 0 && !config.allowedGroups.includes(threadID)) return;
-
-  // Ignore if no message body or too long
-  if (!body || body.length > config.maxMessageLength) return;
-
-  // Check prefix
-  if (!body.startsWith(config.prefix)) return;
-
-  // Extract command and args
-  let commandText = body.slice(config.prefix.length).trim().split(/\s+/)[0].toLowerCase();
-  let args = body.slice(config.prefix.length + commandText.length).trim();
-
-  // Map alias to real command
-  if (config.commandAliases[commandText]) {
-    commandText = config.commandAliases[commandText];
-  }
-
-  // Check disabled commands
-  if (config.disabledCommands.includes(commandText)) {
-    api.sendMessage(config.messages.unknownCommand, threadID);
-    return;
-  }
-
-  // Cooldown check
-  const cooldownKey = `${senderID}_${commandText}`;
-  const now = Date.now();
-  if (cooldowns.has(cooldownKey)) {
-    const lastUsed = cooldowns.get(cooldownKey);
-    const diffSec = (now - lastUsed) / 1000;
-    if (diffSec < config.cooldownSeconds) {
-      api.sendMessage(config.messages.cooldown, threadID);
-      return;
+  // Load Events
+  fs.readdirSync(config.eventPath).filter(file => file.endsWith(".js")).forEach(file => {
+    const event = require(path.join(__dirname, config.eventPath, file));
+    if (event.name && typeof event.run === "function") {
+      api.listenMqtt((err, eventData) => {
+        if (err) return console.error("Listener error:", err);
+        if (eventData.type === event.name) event.run(api, eventData);
+      });
     }
-  }
-  cooldowns.set(cooldownKey, now);
+  });
 
-  // Load command from commands folder
-  const commandPath = path.join(__dirname, "commands", `${commandText}.js`);
-  if (!fs.existsSync(commandPath)) {
-    api.sendMessage(config.messages.unknownCommand, threadID);
-    return;
-  }
+  // Start listener
+  api.listenMqtt(async (err, event) => {
+    if (err) return console.error("Listener error:", err);
+    if (event.type !== "message" || !event.body) return;
 
-  try {
-    const command = require(commandPath);
-    // Send typing indicator
-    api.sendTypingIndicator(threadID, true);
+    const body = event.body.trim();
+    if (!body.startsWith(config.prefix)) return;
 
-    setTimeout(() => {
-      // Execute command
-      command.execute({ message, args, api, config });
-      api.sendTypingIndicator(threadID, false);
-    }, config.autoTypingDelay);
+    const args = body.slice(config.prefix.length).split(/ +/);
+    const cmdName = args.shift().toLowerCase();
+    const commandName = config.commandAliases[cmdName] || cmdName;
 
-    log(`Command '${commandText}' executed by ${senderID} in thread ${threadID}`);
-  } catch (err) {
-    api.sendMessage(config.messages.error, threadID);
-    console.error("Command execution error:", err);
-    log(`Error in command '${commandText}': ${err}`);
-  }
-};
+    const command = commands.get(commandName);
+    if (!command) {
+      return api.sendMessage(config.messages.unknownCommand || "Unknown command.", event.threadID);
+    }
 
-// Start the bot
-startBot();
+    const now = Date.now();
+    if (!cooldowns.has(command.name)) cooldowns.set(command.name, new Map());
+    const timestamps = cooldowns.get(command.name);
+    const cooldownAmount = (config.cooldownSeconds || 5) * 1000;
+
+    if (timestamps.has(event.senderID)) {
+      const expiration = timestamps.get(event.senderID) + cooldownAmount;
+      if (now < expiration) {
+        const remaining = ((expiration - now) / 1000).toFixed(1);
+        return api.sendMessage(config.messages.cooldown.replace("{time}", remaining) || `Please wait ${remaining}s`, event.threadID);
+      }
+    }
+
+    timestamps.set(event.senderID, now);
+    setTimeout(() => timestamps.delete(event.senderID), cooldownAmount);
+
+    try {
+      command.run({ api, event, args, config });
+    } catch (err) {
+      console.error(`❌ Error in command '${command.name}':`, err);
+      api.sendMessage(config.messages.error || "An error occurred.", event.threadID);
+    }
+  });
+});
