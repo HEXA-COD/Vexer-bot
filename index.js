@@ -1,77 +1,124 @@
-const fca = require('fca-unofficial');
-const fs = require('fs');
-const path = require('path');
-const chalk = require('chalk');
-const figlet = require('figlet');
-const ora = require('ora').default;
-const moment = require('moment-timezone');
+const { login } = require("fca-unofficial");
+const config = require("./config.json");
+const fs = require("fs");
+const path = require("path");
+const moment = require("moment-timezone");
+const chalk = require("chalk");
+const figlet = require("figlet");
 
-// Load config
-const config = require('./config.json');
+// Load appState (make sure it's JSON)
+const appState = require("./appState.json");
 
-// Load appState (from appstate.txt)
-const appState = JSON.parse(fs.readFileSync(path.join(__dirname, 'appstate.txt'), 'utf8'));
+// In-memory cooldown tracker: { senderID_commandName: timestamp }
+const cooldowns = new Map();
 
-// Command prefix and container
-const prefix = config.prefix || '!';
-const commands = new Map();
+// Logging helper
+const log = (msg) => {
+  if (config.enableLogging) {
+    const logMsg = `[${new Date().toISOString()}] ${msg}\n`;
+    fs.appendFileSync(config.logFile, logMsg, "utf8");
+  }
+};
 
-// Load commands from commands folder
-const commandsPath = path.join(__dirname, 'commands');
-fs.readdirSync(commandsPath).forEach(file => {
-  if (!file.endsWith('.js')) return;
-  const command = require(path.join(commandsPath, file));
-  commands.set(command.name, command);
-  console.log(chalk.green(`Loaded command: ${command.name}`));
-});
+const startBot = () => {
+  console.log(chalk.cyan(figlet.textSync(config.botName, { horizontalLayout: "full" })));
+  console.log(`Starting bot with prefix '${config.prefix}' and ownerID '${config.ownerID}'`);
+  
+  login({ appState }, (err, api) => {
+    if (err) {
+      console.error("❌ Login failed:", err);
+      log(`Login failed: ${err}`);
+      return;
+    }
 
-// Show startup banner
-console.log(chalk.cyan(figlet.textSync('FB Chatbot', { horizontalLayout: 'full' })));
-console.log(chalk.yellow(`Version: ${config.version} | Prefix: ${prefix}`));
-console.log(chalk.yellow(`Starting Bot as: ${config.botName} | Timezone: ${config.timezone}`));
+    console.clear();
+    console.log(`🤖 Bot '${config.botName}' is now online!`);
+    log(`Bot started successfully`);
 
-const spinner = ora('Logging in with appstate...').start();
+    // Send welcome message to owner on startup
+    api.sendMessage(config.welcomeMessage, config.ownerID);
 
-(async () => {
-  try {
-    // Login with appstate using new fca-unofficial style
-    const api = await fca.create({ appState });
+    api.setOptions({ listenEvents: true, selfListen: false });
 
-    spinner.succeed('Logged in successfully!');
-    console.log(chalk.green(`Logged in as user ID: ${api.getCurrentUserID()}`));
-
-    // Listen to new messages
-    api.listenMqtt(async (err, message) => {
+    api.listen((err, message) => {
       if (err) {
-        console.error(chalk.red('Listen error:'), err);
+        console.error("Listener error:", err);
+        log(`Listener error: ${err}`);
         return;
       }
-
-      if (!message.body || !message.senderID) return;
-
-      // Ignore own messages
-      if (message.senderID === api.getCurrentUserID()) return;
-
-      // Check if message starts with prefix
-      if (!message.body.startsWith(prefix)) return;
-
-      // Parse command and args
-      const args = message.body.slice(prefix.length).trim().split(/ +/);
-      const cmdName = args.shift().toLowerCase();
-
-      // Find command
-      if (!commands.has(cmdName)) return;
-
-      try {
-        await commands.get(cmdName).execute(api, message, args, config);
-      } catch (error) {
-        console.error(chalk.red(`Error executing command ${cmdName}:`), error);
-      }
+      handleMessage(message, api);
     });
+  });
+};
 
-  } catch (error) {
-    spinner.fail('Login failed!');
-    console.error(chalk.red('Error during login:'), error);
-    process.exit(1);
+const handleMessage = (message, api) => {
+  const { senderID, body, threadID, messageID } = message;
+
+  // Block messages from blocked users
+  if (config.blockedUsers.includes(senderID)) return;
+
+  // Allow only from allowed groups if configured
+  if (config.allowedGroups.length > 0 && !config.allowedGroups.includes(threadID)) return;
+
+  // Ignore if no message body or too long
+  if (!body || body.length > config.maxMessageLength) return;
+
+  // Check prefix
+  if (!body.startsWith(config.prefix)) return;
+
+  // Extract command and args
+  let commandText = body.slice(config.prefix.length).trim().split(/\s+/)[0].toLowerCase();
+  let args = body.slice(config.prefix.length + commandText.length).trim();
+
+  // Map alias to real command
+  if (config.commandAliases[commandText]) {
+    commandText = config.commandAliases[commandText];
   }
-})();
+
+  // Check disabled commands
+  if (config.disabledCommands.includes(commandText)) {
+    api.sendMessage(config.messages.unknownCommand, threadID);
+    return;
+  }
+
+  // Cooldown check
+  const cooldownKey = `${senderID}_${commandText}`;
+  const now = Date.now();
+  if (cooldowns.has(cooldownKey)) {
+    const lastUsed = cooldowns.get(cooldownKey);
+    const diffSec = (now - lastUsed) / 1000;
+    if (diffSec < config.cooldownSeconds) {
+      api.sendMessage(config.messages.cooldown, threadID);
+      return;
+    }
+  }
+  cooldowns.set(cooldownKey, now);
+
+  // Load command from commands folder
+  const commandPath = path.join(__dirname, "commands", `${commandText}.js`);
+  if (!fs.existsSync(commandPath)) {
+    api.sendMessage(config.messages.unknownCommand, threadID);
+    return;
+  }
+
+  try {
+    const command = require(commandPath);
+    // Send typing indicator
+    api.sendTypingIndicator(threadID, true);
+
+    setTimeout(() => {
+      // Execute command
+      command.execute({ message, args, api, config });
+      api.sendTypingIndicator(threadID, false);
+    }, config.autoTypingDelay);
+
+    log(`Command '${commandText}' executed by ${senderID} in thread ${threadID}`);
+  } catch (err) {
+    api.sendMessage(config.messages.error, threadID);
+    console.error("Command execution error:", err);
+    log(`Error in command '${commandText}': ${err}`);
+  }
+};
+
+// Start the bot
+startBot();
