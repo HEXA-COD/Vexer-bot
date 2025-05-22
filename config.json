@@ -1,0 +1,33 @@
+{
+  "prefix": "!",
+  "ownerID": "1234567890123456",
+  "cooldownSeconds": 5,
+  "timezone": "Asia/Kathmandu",
+  "language": "en",
+  "botName": "MyFBChatBot",
+  "welcomeMessage": "Hello! I'm your friendly bot. Type !help for commands.",
+  "maxMessageLength": 1000,
+  "enableLogging": true,
+  "logFile": "bot.log",
+  "maxAttachments": 3,
+  "autoTypingDelay": 1000,
+  "maxRetries": 3,
+  "retryDelay": 2000,
+  "commandAliases": {
+    "h": "help",
+    "p": "ping",
+    "t": "time"
+  },
+  "disabledCommands": [],
+  "allowedGroups": [],
+  "blockedUsers": [],
+  "apiKeys": {
+    "weatherAPI": "",
+    "jokeAPI": ""
+  },
+  "messages": {
+    "error": "Oops! Something went wrong.",
+    "unknownCommand": "Sorry, I don't know that command.",
+    "cooldown": "Please wait a bit before sending another command."
+  }
+}
