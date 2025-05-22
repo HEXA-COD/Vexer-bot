@@ -1,11 +1,20 @@
 {
+  "APPSTATE_PATH": "./appState.json",
+  "listenEvents": true,
+  "selfListen": false,
+  "forceLogin": true,
+  "autoMarkDelivery": true,
+  "autoReconnect": true,
+  "useMqtt": true,
+  "logLevel": "silent",
+  "startDelay": 3000,
+  "botName": "Vexer-Bot",
   "prefix": "!",
   "ownerID": "100087872880976",
   "cooldownSeconds": 5,
   "timezone": "Asia/Kathmandu",
   "language": "en",
-  "botName": "Vexer-Bot",
-  "welcomeMessage": "Hello! I'm your friendly  bot. Type !help for commands.",
+  "welcomeMessage": "Hello! I'm your friendly bot. Type !help for commands.",
   "maxMessageLength": 1000,
   "enableLogging": true,
   "logFile": "bot.log",
@@ -13,6 +22,9 @@
   "autoTypingDelay": 1000,
   "maxRetries": 3,
   "retryDelay": 2000,
+  "commandPath": "./commands",
+  "eventPath": "./events",
+  "version": "1.0.0",
   "commandAliases": {
     "h": "help",
     "p": "ping",
@@ -29,5 +41,6 @@
     "error": "Oops! Something went wrong.",
     "unknownCommand": "Sorry, I don't know that command.",
     "cooldown": "Please wait a bit before sending another command."
-  }
+  },
+  "onlineMessage": "🤖 Bot 'Vexer-Bot' is now online!"
 }
