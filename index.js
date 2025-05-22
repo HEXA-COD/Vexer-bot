@@ -2,7 +2,7 @@ const fca = require('fca-unofficial');
 const fs = require('fs');
 const path = require('path');
 const chalk = require('chalk');
-const ora = require('ora');
+const ora = require('ora').default;
 const figlet = require('figlet');
 const moment = require('moment-timezone');
 
