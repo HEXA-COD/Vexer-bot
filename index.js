@@ -1,3 +1,6 @@
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('UNHANDLED PROMISE REJECTION:', reason);
+});
 const login  = require("fca-unofficial");
 const config = require("./config.json");
 const fs = require("fs");
